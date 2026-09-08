@@ -1,0 +1,12 @@
+.git/
+**/.git/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/.env
+**/.pytest_cache/
+**/data/incoming/*
+**/data/output/*
+**/data/archive/*
+**/data/logs/*
+.idea/

@@ -1,0 +1,130 @@
+services:
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${AIRFLOW_IMAGE_NAME}
+    container_name: airflow_init
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      _AIRFLOW_WWW_USER_FIRSTNAME: ${AIRFLOW_ADMIN_FIRSTNAME}
+      _AIRFLOW_WWW_USER_LASTNAME: ${AIRFLOW_ADMIN_LASTNAME}
+      _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./config:/opt/airflow/config
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create
+      --username ${AIRFLOW_ADMIN_USERNAME}
+      --password ${AIRFLOW_ADMIN_PASSWORD}
+      --firstname ${AIRFLOW_ADMIN_FIRSTNAME}
+      --lastname ${AIRFLOW_ADMIN_LASTNAME}
+      --role Admin
+      --email ${AIRFLOW_ADMIN_EMAIL}
+      || true
+      "
+    networks:
+      - airflow_net
+      - postgres_custom_net
+
+  airflow-webserver:
+    image: ${AIRFLOW_IMAGE_NAME}
+    container_name: airflow_webserver
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    command: webserver
+    ports:
+      - "3020:3020"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./config:/opt/airflow/config
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail http://localhost:3020/health || exit 1"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - airflow_net
+      - postgres_custom_net
+
+  airflow-scheduler:
+    image: ${AIRFLOW_IMAGE_NAME}
+    container_name: airflow_scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    command: scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./config:/opt/airflow/config
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - airflow_net
+      - postgres_custom_net
+
+  airflow-triggerer:
+    image: ${AIRFLOW_IMAGE_NAME}
+    container_name: airflow_triggerer
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    command: triggerer
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./config:/opt/airflow/config
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type TriggererJob --hostname \"$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - airflow_net
+      - postgres_custom_net
+
+networks:
+  airflow_net:
+    driver: bridge
+  postgres_custom_net:
+    external: true
