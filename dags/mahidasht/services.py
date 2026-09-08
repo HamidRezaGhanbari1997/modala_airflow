@@ -238,16 +238,16 @@ def from_jalali_str(jalali_str: str) -> date:
     return jdatetime.date(year, month, day).togregorian()
 
 
-def get_watermark(engine: Engine, provider: str, service_id: int) -> date | None:
-    # MAX(), not a single row: the table now logs one row per day attempted
-    # (success or failed), so the resume point is the latest day of any
-    # status - a "failed" day still counts as handled and isn't retried.
+def get_last_success_date(engine: Engine, provider: str, service_id: int) -> date | None:
+    # Only status='success': the resume point is the last day that actually
+    # produced data, so a run always retries forward from real progress -
+    # see compute_date_range for how failed days get retried (capped).
     with engine.connect() as conn:
         row = conn.execute(
             text(
                 f"""
                 SELECT MAX(last_fetched_date) FROM dbo.{WATERMARK_TABLE}
-                WHERE provider = :provider AND service_id = :service_id
+                WHERE provider = :provider AND service_id = :service_id AND last_status = 'success'
                 """
             ),
             {"provider": provider, "service_id": service_id},
@@ -259,13 +259,30 @@ def compute_date_range(engine: Engine, provider: str, service_id: int) -> tuple[
     offset_days = int(os.environ.get("MAHIDASHT_WATERMARK_END_OFFSET_DAYS", "2"))
     end_date = date.today() - timedelta(days=offset_days)
 
-    last_fetched = get_watermark(engine, provider, service_id)
-    if last_fetched:
-        start_date = last_fetched + timedelta(days=1)
-    else:
+    last_success = get_last_success_date(engine, provider, service_id)
+
+    if last_success is None:
+        # Never succeeded even once - a brand new agent, do a full backfill
+        # from the configured start date. Not capped by the retry window
+        # below: that window only protects against re-walking a long *failed*
+        # streak after some real progress, not an intentional first backfill.
         initial_start = os.environ.get("MAHIDASHT_INITIAL_START_DATE", "").strip()
         start_date = from_jalali_str(initial_start) if initial_start else end_date
+        return start_date, end_date
 
+    naive_start = last_success + timedelta(days=1)
+
+    # If a provider's server has been down for a long stretch (e.g. Vision
+    # hanging on every request for 2+ months), resuming strictly from
+    # last_success+1 would re-attempt every single one of those failed days
+    # (each up to ~125s) on every DAG run, forever, without ever reaching
+    # today's data. Cap how far back we're willing to retry failed days;
+    # anything older than the window is left as a permanent "failed" log
+    # entry and simply skipped so newer data always gets a chance.
+    retry_window_days = int(os.environ.get("MAHIDASHT_FAILED_RETRY_WINDOW_DAYS", "7"))
+    retry_floor = end_date - timedelta(days=retry_window_days - 1)
+
+    start_date = max(naive_start, retry_floor)
     return start_date, end_date
 
 
