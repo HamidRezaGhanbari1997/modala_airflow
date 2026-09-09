@@ -33,9 +33,13 @@ services:
       --email ${AIRFLOW_ADMIN_EMAIL}
       || true
       "
+    # postgres16 دیگر روی همین هاست نیست (سرور datainfra) - دیتابیس Airflow
+    # از طریق POSTGRES_HOST=172.16.1.141:5434 در .env مستقیم روی شبکه صدا
+    # زده می‌شود، نه از طریق شبکه‌ی داخلی داکر.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - airflow_net
-      - postgres_custom_net
 
   airflow-webserver:
     image: ${AIRFLOW_IMAGE_NAME}
@@ -63,9 +67,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - airflow_net
-      - postgres_custom_net
 
   airflow-scheduler:
     image: ${AIRFLOW_IMAGE_NAME}
@@ -91,9 +96,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - airflow_net
-      - postgres_custom_net
 
   airflow-triggerer:
     image: ${AIRFLOW_IMAGE_NAME}
@@ -119,12 +125,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - airflow_net
-      - postgres_custom_net
 
 networks:
   airflow_net:
     driver: bridge
-  postgres_custom_net:
-    external: true
