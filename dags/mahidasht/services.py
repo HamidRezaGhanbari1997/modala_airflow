@@ -67,20 +67,60 @@ def load_providers_config() -> dict:
         return json.load(f)
 
 
-def get_engine() -> Engine:
+_database_ensured = False
+
+
+def _mssql_env() -> tuple[str, str, str, str, str, str]:
     host = os.environ["MSSQL_HOST"]
     port = os.environ.get("MSSQL_PORT", "1433")
     database = os.environ["MSSQL_DB"]
     user = os.environ["MSSQL_USER"]
     password = os.environ["MSSQL_PASSWORD"]
     driver = os.environ.get("MSSQL_DRIVER", "ODBC Driver 18 for SQL Server")
+    return host, port, database, user, password, driver
 
+
+def _odbc_engine(database: str) -> Engine:
+    host, port, _database, user, password, driver = _mssql_env()
     odbc_str = (
         f"DRIVER={{{driver}}};SERVER={host},{port};DATABASE={database};"
         f"UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=yes"
     )
     conn_str = urllib.parse.quote_plus(odbc_str)
     return create_engine(f"mssql+pyodbc:///?odbc_connect={conn_str}", fast_executemany=True)
+
+
+def ensure_database_exists() -> None:
+    # Same self-healing pattern as ensure_watermark_table_exists /
+    # ensure_stock_table_exists below, one level up: the destination
+    # database itself (MSSQL_DB, normally ats_staging) is never
+    # provisioned anywhere else, so a fresh SQL Server instance would
+    # otherwise need it created by hand before any DAG could run. Runs at
+    # most once per worker process (memoized) against the always-present
+    # `master` database, since the target database may not exist yet.
+    global _database_ensured
+    if _database_ensured:
+        return
+
+    _, _, database, _, _, _ = _mssql_env()
+    master_engine = _odbc_engine("master")
+    try:
+        with master_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM sys.databases WHERE name = :db"), {"db": database}
+            ).scalar()
+            if not exists:
+                conn.execute(text(f"CREATE DATABASE [{database}]"))
+    finally:
+        master_engine.dispose()
+
+    _database_ensured = True
+
+
+def get_engine() -> Engine:
+    ensure_database_exists()
+    _, _, database, _, _, _ = _mssql_env()
+    return _odbc_engine(database)
 
 
 def ensure_watermark_table_exists(engine: Engine) -> None:
